@@ -1,0 +1,420 @@
+
+--# Main
+--SETTINGS
+    TexturePackSize=1
+    Scene=readImage()
+--SETTINGS END
+
+
+function setup()
+    noSmooth()
+    spriteMode(CORNER)
+    RunSystem=false
+    if Scene.rawWidth*TexturePackSize*2>2048*4 then
+        if TexturePackSize==1 then
+            print("Your scene if too big!")
+        else
+            print("Your scene if too big! You might want to decrease TexturePackSize!")
+        end
+    else
+        RunSystem=true
+        print("Scene Resolution: "..math.floor(Scene.rawWidth).."^2")
+        print("Lightmap Resolution: "..math.floor(Scene.rawWidth*TexturePackSize).."^2")
+        RScene=image(Scene.width*TexturePackSize,Scene.height*TexturePackSize)
+        setContext(RScene)
+        sprite(Scene,0,0,RScene.width,RScene.height)
+        setContext()
+        Radiosity:Initialize()
+        Radiosity:InjectDirectLight()
+        collectgarbage() collectgarbage() collectgarbage()
+    end
+end
+
+function draw()
+    if RunSystem then
+        Radiosity:Update()
+        --Display Sprites
+        background(0, 0, 0, 255)
+        sprite(Screen,0,0,512,512)
+        sprite(Radiosity.Light,0,512,256,256)
+        sprite(Radiosity.DFImg,256,512,256,256)
+        --Sun direction
+        if ShowPil==true then
+            stroke(SunColor)
+            strokeWidth(3)
+            translate(256,256)
+            rotate(SunAngle)
+            line(0,0,0,10*SunStrength)
+            line(0,10*SunStrength,-5,10*SunStrength-5) line(0,10*SunStrength,5,10*SunStrength-5)
+            resetMatrix()
+        end
+    end
+end
+--# Radiosity
+Radiosity=class()
+
+function Radiosity:Initialize()
+    spriteMode(CORNER)
+    LightBounces=0
+    ShowPil=false
+--Vars
+    self.ARES=vec2(RScene.rawWidth,RScene.rawWidth)
+    self.Off=vec2(1/self.ARES.x,1/self.ARES.y)
+    self.RES=(self.ARES/2)
+    self.DFA={0,true}
+--Images
+    self.Light=image(self.RES.x*2,self.RES.y*2)
+    self.DFImg=image(self.RES.x,self.RES.y)
+    setContext(self.DFImg)
+    background(255, 255, 255, 255)
+    setContext()
+--Mesh Direct Light
+    self.DL=mesh()
+    self.DL.vertices={vec2(0,0),vec2(self.RES.x*2,0),vec2(self.RES.x*2,self.RES.y*2)
+    ,vec2(self.RES.x*2,self.RES.y*2),vec2(0,self.RES.y*2),vec2(0,0)}
+    self.DL.texCoords={vec2(0,0),vec2(1,0),vec2(1,1),vec2(1,1),vec2(0,1),vec2(0,0)}
+    self.DL.shader=shader(ShaderVert,DLFrag)
+    self.DL.shader.Scene=Scene
+--Mesh Distance Field
+    self.DF=mesh()
+    self.DF.vertices={vec2(0,0),vec2(self.RES.x,0),self.RES,self.RES,vec2(0,self.RES.y),vec2(0,0)}
+    self.DF.texCoords={vec2(0,0),vec2(1,0),vec2(1,1),vec2(1,1),vec2(0,1),vec2(0,0)}
+    self.DF.shader=shader(ShaderVert,DFFrag)
+    self.DF.shader.Scene=RScene
+    self.DF.shader.DF=self.DFImg
+    self.DF.shader.RES=RScene.rawWidth
+--Mesh Accum Light
+    self.AL=mesh()
+    self.AL.vertices={vec2(0,0),vec2(self.RES.x*2,0),vec2(self.RES.x*2,self.RES.y*2)
+    ,vec2(self.RES.x*2,self.RES.y*2),vec2(0,self.RES.y*2),vec2(0,0)}
+    self.AL.texCoords={vec2(0,0),vec2(1,0),vec2(1,1),vec2(1,1),vec2(0,1),vec2(0,0)}
+    self.AL.shader=shader(ShaderVert,AccumFrag)
+    self.AL.shader.Scene=Scene
+    self.AL.shader.DF=self.DFImg
+    self.AL.shader.Light=self.Light
+    self.AL.shader.RES=Scene.rawWidth
+    self.AL.shader.Photons=360
+    self.AL.shader.Normals={vec2(1,0),vec2(-1,0),vec2(0,1),vec2(0,-1)}
+--Display
+    Screen=image(RScene.width,RScene.height)
+    ScreenMesh=mesh()
+    ScreenMesh.vertices={vec2(0,0),vec2(self.RES.x,0),self.RES,self.RES,vec2(0,self.RES.y),vec2(0,0)}
+    ScreenMesh.texCoords={vec2(0,0),vec2(1,0),vec2(1,1),vec2(1,1),vec2(0,1),vec2(0,0)}
+    ScreenMesh.shader=shader(ShaderVert,ScreenFrag)
+    ScreenMesh.shader.Light=self.Light
+--Message
+    print("Constructing Distance Field...")
+end
+
+function Radiosity:InjectDirectLight()
+    setContext(self.Light)
+    background(0, 0, 0, 255)
+    self.DL:draw()
+    setContext()
+end
+
+function Radiosity:Update()
+    if self.DFA[2] then
+        setContext(self.DFImg)
+        self.DF.shader.BoxDist=self.DFA[1]+1
+        self.DF:draw()
+        setContext()
+        self.DFA[1]=self.DFA[1]+1
+        if self.DFA[1]==RScene.rawWidth then
+            collectgarbage() collectgarbage() collectgarbage()
+            print("Done!")
+            self.DFA[2]=false
+            ShowPil=true
+            parameter.color("SkyColor",color(0, 167, 255, 255))
+            parameter.color("SunColor",color(243, 210, 38, 255))
+            parameter.number("SunStrength",1,16,6)
+            parameter.number("SunAngle",0,360,222)
+            parameter.action("Done", function()
+                self.AL.shader.SunColor=vec3(SunColor.r/255,SunColor.g/255,SunColor.b/255)*SunStrength
+                self.AL.shader.SkyColor=vec3(SkyColor.r/255,SkyColor.g/255,SkyColor.b/255)
+                self.AL.shader.SunDir=-vec2(-math.sin(math.rad(SunAngle)),math.cos(math.rad(SunAngle)))
+                ShowPil=false
+                parameter.clear()
+                parameter.watch("LightBounces")
+                parameter.action("Bounce Photons", function()
+                    Radiosity:Gather()
+                    LightBounces=LightBounces+1
+                end)
+                parameter.action("Save lightmap!",function()
+                    parameter.clear()
+                    parameter.text("ImageName","Documents:MyLightMap")
+                    parameter.action("Save",function()
+                        saveImage(ImageName,self.Light)
+                        print("Your lightmap has been saved from the evil!")
+                        parameter.clear()
+                        parameter.action("Close", function() close() end)
+                    end)
+                end)
+            end)
+        end
+    end
+end
+
+function Radiosity:Gather()
+--Gather Photons
+    setContext(self.Light)
+    self.AL:draw()
+    setContext()
+--Screen
+    setContext(Screen)
+    ScreenMesh:draw()
+    setContext()
+end
+
+ShaderVert=[[
+uniform mat4 modelViewProjection;
+attribute vec4 position;
+attribute vec2 texCoord;
+varying vec2 vt;
+void main() {
+    vt=texCoord;
+    gl_Position=modelViewProjection*position;
+}
+]]
+
+DLFrag=[[
+precision highp float;
+varying vec2 vt;
+uniform sampler2D Scene;
+
+void main() {
+    vec2 fvt=fract(vt*2.);
+    vec4 C=texture2D(Scene,fvt);
+    if (C.w>0. && C.w<1.) //Emissive
+        gl_FragColor=vec4(C.xyz,1.);
+    else //Air or diffuse wall
+        gl_FragColor=vec4(0.,0.,0.,1.);
+}
+]]
+
+DFFrag=[[
+precision highp float;
+varying vec2 vt;
+uniform sampler2D Scene;
+uniform sampler2D DF;
+uniform float BoxDist;
+uniform float RES;
+#define IRES 1./RES
+#define i255 1./255.
+const highp vec2 Values=vec2(1./255.,1./65025.);
+
+float decodeDepth(vec3 c) { return dot(c,vec3(1.,Values.x,Values.y)); }
+
+vec3 encodeDepth(float d) {
+    vec3 enc=vec3(1.,255.,65025.)*d;
+    enc=fract(enc);
+    enc-=vec3(enc.y,enc.z,enc.z)*vec3(i255,i255,i255);
+    return ((d>=1.)?vec3(1.):enc);
+}
+
+float Sample(float CDist, vec2 CPos, vec2 SPos) {
+    if (SPos.x>RES || SPos.x<0. || SPos.y>RES || SPos.y<0.) return CDist;
+    return ((texture2D(Scene,SPos*IRES).w==0.)?CDist:min(CDist,length(CPos-SPos)));
+}
+
+void main() {
+    if (texture2D(Scene,vt).w>0.) {
+        gl_FragColor=vec4(0.,0.,0.,1.);
+    } else {
+        vec2 Pos=vt*RES;
+        float Dist=decodeDepth(texture2D(DF,vt).xyz)*RES;
+        if (Dist>BoxDist) { //Distance is as small as it can be
+            float OffX=BoxDist;
+            float OffY=BoxDist-1.;
+            //X Sides
+            for (float Side=-1.; Side<2.; Side=Side+2.) {
+                for (float y=-OffX; y<=OffX; y=y+1.) {
+                    Dist=Sample(Dist,Pos,Pos+vec2(BoxDist*Side,y));
+                }
+            }
+            //Y Sides
+            for (float Side=-1.; Side<2.; Side=Side+2.) {
+                for (float x=-OffY; x<=OffY; x=x+1.) {
+                    Dist=Sample(Dist,Pos,Pos+vec2(x,BoxDist*Side));
+                }
+            }
+            //Display
+            gl_FragColor=vec4(encodeDepth(Dist*IRES),1.);
+        } else {
+            gl_FragColor=vec4(encodeDepth(Dist*IRES),1.);
+        }
+    }
+}
+]]
+
+AccumFrag=[[
+precision highp float;
+varying vec2 vt;
+uniform sampler2D Scene;
+uniform sampler2D DF;
+uniform sampler2D Light;
+uniform float Photons;
+uniform float RES;
+uniform vec3 SunColor;
+uniform vec3 SkyColor;
+uniform vec2 SunDir;
+uniform vec2 Normals[4];
+#define IRES 1./RES
+#define IPhotons 1./Photons
+#define ToRad IPhotons*3.14159
+const highp vec2 Values=vec2(1./255.,1./65025.);
+
+float decodeDepth(vec3 c) { return dot(c,vec3(1.,Values.x,Values.y)); }
+
+float boxfar(vec2 origin, vec2 dir, vec2 bmin, vec2 bmax) {
+    vec2 tMin=(bmin-origin)*dir;
+    vec2 tMax=(bmax-origin)*dir;
+    vec2 t2=vec2(max(tMin.x,tMax.x),max(tMin.y,tMax.y));
+    return min(t2.x,t2.y);
+}
+
+vec3 Sky(vec2 D) {
+    return SkyColor+pow(max(0.,dot(D,SunDir)),16.)*SunColor;
+}
+
+vec3 Trace(vec2 P, vec2 D) {
+    float t=0.;
+    vec2 IDir=1./D;
+    vec2 cp,fp,lfp; float df;
+    float MaxDist=boxfar(P,IDir,vec2(0.,0.),vec2(RES));
+    while (t<MaxDist) {
+        cp=P+D*t;
+        fp=vec2(floor(cp.x),floor(cp.y));
+        df=decodeDepth(texture2D(DF,cp*IRES).xyz)*RES;
+        if (df==0.) {
+            vec2 Nor=lfp-fp;
+            vec2 NOff=vec2((abs(Nor.x)<abs(Nor.y))
+            ?((Nor.y>0.)?vec2(0.5,0.):vec2(0.5,0.5)):((Nor.x>0.)?vec2(0.):vec2(0.,0.5)));
+            return texture2D(Light,vec2(cp.x*IRES*0.5,cp.y*IRES*0.5)+NOff).xyz;
+        }
+        t=((df<3.5)?boxfar(P,IDir,fp,vec2(fp.x+1.,fp.y+1.))+0.0001:t+df);
+        lfp=fp;
+    }
+    return Sky(D);
+}
+
+void main() {
+    vec2 VT=fract(vt*2.);
+    vec4 Att=texture2D(Scene,VT);
+    if (Att.w>0. && Att.w<1.) { //Is Emissive?
+        gl_FragColor=texture2D(Light,vt);
+    } else {
+        float FL=floor(vt.x*2.)*2.+floor(vt.y*2.);
+        vec2 Normal=Normals[int(FL)];
+        vec2 Pos=VT*RES;
+        float AddAngle=((FL<1.5)?((FL==0.)?0.:1.):((FL==2.)?1.5:0.5))*3.14159;
+//If wall, offset by normal
+        if (Att.w==1.) Pos=Pos+Normal;
+//Tracing
+        float Angle; vec2 Dir;
+        vec3 Col=vec3(0.);
+        for (float a=0.; a<Photons; a++) {
+            Angle=a*ToRad+AddAngle;
+            Dir=vec2(sin(Angle),cos(Angle));
+            Col=Col+Trace(Pos,Dir)*dot(Dir,Normal);
+        }
+        gl_FragColor=vec4((Col*IPhotons)*((Att.w==1.)?Att.xyz:vec3(1.)),1.);
+    }
+}
+]]
+
+ScreenFrag=[[
+precision highp float;
+varying vec2 vt;
+uniform sampler2D Light;
+
+vec3 GetLight(vec2 LP) {
+    vec2 VT=LP*0.5;
+    return (texture2D(Light,VT).xyz+
+    texture2D(Light,vec2(VT.x,VT.y+0.5)).xyz+
+    texture2D(Light,vec2(VT.x+0.5,VT.y)).xyz+
+    texture2D(Light,vec2(VT.x+0.5,VT.y+0.5)).xyz)*0.25;
+}
+
+vec3 GetLightN(vec2 LP, vec2 LN) {
+    vec2 VT=LP*0.5;
+    return ((LN.x>0.)?texture2D(Light,vec2(VT.x,VT.y)).xyz*LN.x:-(texture2D(Light,vec2(VT.x,VT.y+0.5)).xyz*LN.x))+
+    ((LN.y>0.)?texture2D(Light,vec2(VT.x+0.5,VT.y)).xyz*LN.y:-(texture2D(Light,vec2(VT.x+0.5,VT.y+0.5)).xyz*LN.y));
+}
+
+
+void main() {
+//Fetch light
+    vec3 Pixel=GetLight(vt);
+//Gamma Correction (IMPORTANT!)
+    gl_FragColor=vec4(pow(Pixel,vec3(0.45)),1.);
+}
+]]
+--# ReadMe
+--Information
+--  This system generates an anisotropic lightmap that you can use in your game.
+--  It can handle:
+--      - Diffuse global illumination with unlimited number of light bounces
+--      - Emissive objects
+--      - Sky and sun
+--      - High resolutions
+
+
+
+
+--SETTINGS Info
+--  Scene
+--      Image, your scene in tiles.
+--  TexturePackSize
+--      Integer, defines resolution of lightmap i comparison to the tile-resolution
+--          1 -> Lightmap.width==Scene.width, 2 -> Lightmap.width==Scene.width*2, 
+--          4 -> Lightmap.width==Scene.width*4
+--      I recommend that TexturePackSize*Scene.rawWidth < 1024
+
+
+
+
+--How to generate your lightmap:
+--  1. Settings
+--      In order to get your precious lightmap, your scene must follow some rules:
+--          IMPORTANT!
+--              1. Every image must be defined raw
+--                  An image with resolution 64^2 is defined as "image(32,32)", not "image(64,64)"
+--              2. "Image.rawWidth" must equal to "Image.rawHeight"
+--      The following 3 types of material can exist inside your scene:
+--          Diffuse wall (Pixel.alpha==1.)
+--          Air or floor (Pixel.alpha==0.)
+--          Emissive objekt (Pixel.alpha>0. && Pixel.alpha<1.)
+--  2. Wait for the distance field to construct itself
+--  3. Choose sky color, sun color and direction
+--  4. Just smash that Gather-button until you are pleased with the number of lightbounces
+--  5. Save your precious lightmap
+--  6. Profit!
+
+
+
+
+--How to use it in your shader:
+--  There are 2 functions below that you can paste inside your shader, you will need bind your lightmap to
+--  a sampler2D type uniform and name it "Light" in order to not get an error!
+--  Look at "ScreenFrag" in the Radiosity-tab (scroll down to the bottom)!
+
+--  What is the difference between these functions?
+--      GetLight does not need an normal
+--      GetLightN needs a normal to fetch the light, perfect for normalmapping and complex objects in your scene
+
+Functions=[[
+vec3 GetLight(vec2 LP) {
+    vec2 VT=LP*0.5;
+    return (texture2D(Light,VT).xyz+
+    texture2D(Light,vec2(VT.x,VT.y+0.5)).xyz+
+    texture2D(Light,vec2(VT.x+0.5,VT.y)).xyz+
+    texture2D(Light,vec2(VT.x+0.5,VT.y+0.5)).xyz)*0.25;
+}
+
+vec3 GetLightN(vec2 LP, vec2 LN) {
+    vec2 VT=LP*0.5;
+    return ((LN.x>0.)?texture2D(Light,vec2(VT.x,VT.y)).xyz*LN.x:-(texture2D(Light,vec2(VT.x,VT.y+0.5)).xyz*LN.x))+
+    ((LN.y>0.)?texture2D(Light,vec2(VT.x+0.5,VT.y)).xyz*LN.y:-(texture2D(Light,vec2(VT.x+0.5,VT.y+0.5)).xyz*LN.y));
+}
+]]
